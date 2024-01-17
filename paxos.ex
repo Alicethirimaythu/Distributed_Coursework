@@ -22,7 +22,6 @@ defmodule Paxos do
   def start(name, participants) do
     pid = spawn(Paxos, :init, [name, participants])
     Utils.register_name(name, pid, false)
-    pid
   end
 
   def init(name, participants) do
