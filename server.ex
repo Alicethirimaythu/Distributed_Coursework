@@ -33,20 +33,28 @@ defmodule Server do
                 IO.puts("State - #{inspect(state)} \n\n\n")
                 state = if Map.has_key?(state.seating_plan, String.to_atom(seat_num)) do
                     state = %{state | inst: state.inst+1}
+
+                    # Get the value (decision made) for this instance
                     inst_decision_made = Paxos.get_decision(state.pax_pid, state.inst, 5000)
 
+                    # Check if the decision for that instance is made
                     state = if inst_decision_made == nil do
-                        state = %{state | seating_plan: Map.replace(state.seating_plan, String.to_atom(seat_num), client_name)}
-                        decision = Paxos.propose(state.pax_pid, state.inst, state.seating_plan, 5000)
-                        IO.puts("This is the decision - #{inspect(decision)}")
-                        IO.puts("This is the name in the seating_plan - #{Map.get(decision, String.to_atom(seat_num))}, current client name - #{client_name}")
-                        if Map.get(decision, String.to_atom(seat_num)) == client_name do
+                    # if not propose the value to the leader in paxos
+                        # need to check if the already booked
+                        if Map.get(state.seating_plan, String.to_atom(seat_num)) == nil do
+
+                            decision = Paxos.propose(state.pax_pid, state.inst, Map.replace(state.seating_plan, String.to_atom(seat_num), client_name), 5000)
+                            state = %{state | seating_plan: decision}
                             send(pid, {:server_response, seat_num, true})
+                            IO.puts("This is the decision - #{inspect(decision)}")
+                            state
+                            # IO.puts("This is the name in the seating_plan - #{Map.get(decision, String.to_atom(seat_num))}")
                         else
                             send(pid, {:server_response, seat_num, false})
+                            state
                         end
-                        state
                     else
+                        # else update the seating plan in the state
                         state = %{state | seating_plan: inst_decision_made}
                         send(pid, {:error})
                         state
