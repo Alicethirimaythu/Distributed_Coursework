@@ -1,252 +1,618 @@
-# def test(paxos_pid) do
-#  propose = Paxos.propose(paxos_pid, :inst_1, :value_1, 1000)
-
-#  handle(propose)
-# end
-
-# def handle({:abort}) do
-#   1
-# end
-
-# def handle({:timeout}) do
-#   2
-# end
-
-# def handle({:decision, v}) do
-#  3
-# end
-
-
 defmodule Paxos do
-
   def start(name, participants) do
-    pid = spawn(Paxos, :init, [name, participants])
-    Utils.register_name(name, pid, false)
+    # do spawn stuff
+
+    # is a function that takes an atom name, and a list of
+    # atoms participants as arguments. It spawns a Paxos process, registers it in the global
+    # registry under the name name, and returns the identifier of the newly spawned process.
+    # The argument participants must be assumed to include symbolic names of all
+    # replicas (including the one specified by name) participating in the protocol.
+
+    pid_pax = spawn(Paxos, :init, [name, participants])
+
+    Utils.register_name(name, pid_pax, false)
   end
 
   def init(name, participants) do
-    ld = LeaderElection.start(name, participants)
+    leader = Leader_election.start(name, participants)
 
     state = %{
+      # name of the process
       name: name,
+      # parent process application name
+      parent_name: nil,
+      # list of other processes in the network
       participants: participants,
+      # leader process is updated in :leader_elect
       leader: nil,
-      ####
-      decided: false,
-      inst_state: %{},
-      inst_decisions: %{}
+      instance_state: %{},
+      instance_decision: %{}
     }
-    
+
     run(state)
   end
 
   def run(state) do
+    # run stuff
+    state =
+      receive do
+        {:leader_elect, first_elem} ->
+          IO.puts("#{state.name} - Leader #{first_elem} is the new leader!")
+          # called by leader_election.ex to tell parent process which process is leader
+          state = %{state | leader: first_elem}
 
-    state = receive do
-      {:leader_elect, first_element} ->
-        # leader election will send the leader to the paxos
-        # it will be stored in the state.leader
-        state = %{state | leader: first_element}
-        IO.puts("#{state.name} trust the new leader #{first_element}!")
-        # if state.name == state.leader and state.val != nil do
-        #   IO.puts("#{state.leader} started a ballot!")
-        #   Utils.beb_broadcast(state.participants, {:prepare, (state.bal + 1), state.name})
-        # end
-        if state.name == state.leader do
-          for {key, val} <- state.inst_state, into: %{} do
-           Utils.beb_broadcast(state.participants, {:prepare, key, state.inst_state[key].bal + 1, state.name})
+          if state.name == state.leader do
+            Enum.reduce(Map.keys(state.instance_state), 0, fn x, acc ->
+              Utils.beb_broadcast(
+                state.participants,
+                {:prepare, x, state.instance_state[x].bal + 1, state.leader}
+              )
+            end)
           end
-        end
-        state
-        
 
-      ###--------------------###
-      {:broadcast, inst, v, parent_name} ->
-        # this is where the application propose value and send to paxos
-        # if the process is elected as a leader, broadcast the prepare stage
-        # if not, do nothing
-        if state.inst_decisions[inst] != nil do
-          send(parent_name, {:decision_made, state.inst_decisions[inst]})
           state
-        else
-          # state = %{state | val: v, inst: inst, parent_name: parent_name}
-          state = %{state | inst_state: Map.put(state.inst_state, inst, %{
-                parent_name: parent_name,
-                bal: 0,
-                a_bal: 0,
-                a_val: nil,
-                val: v,
-                a_val_list: [], # a list that will track all the a_val with b_val in {a_val, a_bal} tuple from all the processes 
-                ####
-                prepared_quorum: 0,
-                accepted_quorum: 0
-          })}
-          for {key, val} <- state.inst_state, into: %{} do
-            Utils.beb_broadcast(state.participants, {:share_proposal, state.inst_state[key].val , key})
-          end
-          IO.puts("#{state.name} purposed a value to the leader!")
+
+        {:broadcast, instance_num, value, parent_process} ->
+          state = %{state | parent_name: parent_process}
+
+          IO.puts(
+            "#{state.name} - with #{instance_num} has proposed #{inspect(value)} to the leader! "
+          )
+
+          Utils.beb_broadcast(state.participants, {:share_proposal, value, instance_num})
           state
-        end
 
-      ###--------------------###
-      {:share_proposal, v, inst} ->
-        # share the proposal to all the processes
-        # IO.puts("#{state.name} got the share value!")
-        ##### state = %{state | val: v, inst: inst}
-        state = %{state | inst_state: Map.put(state.inst_state, inst, %{
-              parent_name: nil,
-              bal: 0,
-              a_bal: 0,
-              a_val: nil,
-              val: v,
-              a_val_list: [], # a list that will track all the a_val with b_val in {a_val, a_bal} tuple from all the processes 
-              ####
-              prepared_quorum: 0,
-              accepted_quorum: 0
-        })}
-        IO.puts("#{state.name} got the value #{inspect(state.val)} !")
-        state
-        
+        {:share_proposal, proposal, instance_num} ->
+          state = check_instance_state_exist(state, instance_num)
+          IO.puts("#{state.name} - has recieved a proposal of val: #{inspect(proposal)}")
 
-      ###--------------------###
-      {:prepare, inst, b, sender} ->
-        # after leader started prepare ballot, all of the process will send prepared to the leader
-        if b > state.bal do
-          state = %{state | bal: b}
-          IO.puts("#{state.name} prepared ballot #{state.bal}")
-          Utils.unicast(sender, {:prepared, b, state.a_bal, state.a_val})
-          state
-        else
-          IO.puts("#{state.name} send NACK from prepare!")
-          Utils.unicast(sender, {:nack, b})
-          state
-        end
-
-      ###--------------------###
-      {:prepared, inst, b, a_bal, a_val} ->
-        # whenever leader gets a prepared message, the quorum will increment
-        # this is to track if the majority of process send prepared message to the leader
-        state = %{state | prepared_quorum: state.prepared_quorum + 1}
-        state = %{state | a_val_list: state.a_val_list++[{a_bal, a_val}]}
-        IO.puts("Prepared Quorum - #{state.prepared_quorum}")
-        state = if state.name == state.leader do
-          # IO.puts("Prepared Quorum - #{state.name} is the leader")
-          if state.prepared_quorum >= trunc(length(state.participants)/2 + 1) do
-          IO.puts("#{state.name} Meet the prepare quorum!")
-
-            state = if Enum.all?(state.a_val_list, fn {k,v} -> v == nil end) do
-              IO.puts("#{state.name} - [a_val == nil] Setting val <- #{inspect(state.val)} ")
-              state = %{state | val: state.val, prepared_quorum: 0}
-              state
+          state =
+            if state.instance_state[instance_num].v == nil do
+              %{
+                state
+                | instance_state:
+                    Map.put(state.instance_state, instance_num, %{
+                      state.instance_state[instance_num]
+                      | v: proposal
+                    })
+              }
             else
-              {a_bal, a_val} = Enum.reduce(state.a_val_list, {0, nil}, fn {k,v}, acc -> 
-                {acc_k, acc_v} = acc
-                if k > acc_k do
-                  {k,v}
-                else
-                  {acc_k, acc_v}
-                end
-              end)
-              IO.puts("#{state.name} - [a_val != nil] Setting val <- #{inspect(a_val)} ")
-              state = %{state | val: a_val, prepared_quorum: 0}
               state
             end
-          IO.puts("#{state.name} - has sent to participants to accept")
-          Utils.beb_broadcast(state.participants, {:accept, b, state.val, state.name})
+
+          if state.name == state.leader do
+            IO.puts(
+              "#{state.name} - #{state.leader} has started a ballot! b-#{inspect(state.instance_state[instance_num].bal)}"
+            )
+
+            Utils.beb_broadcast(
+              state.participants,
+              {:prepare, instance_num, state.instance_state[instance_num].bal + 1, state.leader}
+            )
+          end
+
           state
+
+        {:prepare, instance_num, b, leader} ->
+          state = check_instance_state_exist(state, instance_num)
+
+          if b > state.instance_state[instance_num].bal do
+            IO.puts(
+              "#{state.name} - sending a prepared to leader! | leader: #{inspect(leader)}"
+            )
+
+            state = %{
+              state
+              | instance_state:
+                  Map.put(state.instance_state, instance_num, %{
+                    state.instance_state[instance_num]
+                    | bal: b
+                  })
+            }
+
+            Utils.unicast(
+              leader,
+              {:prepared, instance_num, b, state.instance_state[instance_num].a_bal,
+               state.instance_state[instance_num].a_val}
+            )
+
+            state
+          else
+            IO.puts(
+              "#{state.name} - NACK SENT | b:#{inspect(b)} | bal #{inspect(state.instance_state[instance_num].bal)}"
+            )
+
+            Utils.unicast(leader, {:nack, b})
+            state
+          end
+
+        {:prepared, instance_num, b, a_bal, a_val} ->
+          state = check_instance_state_exist(state, instance_num)
+
+          if state.name == state.leader and b == state.instance_state[instance_num].bal do
+            state = %{
+              state
+              | instance_state:
+                  Map.put(state.instance_state, instance_num, %{
+                    state.instance_state[instance_num]
+                    | quorums_prepared: state.instance_state[instance_num].quorums_prepared + 1,
+                      a_val_list:
+                        state.instance_state[instance_num].a_val_list ++ [{a_bal, a_val}]
+                  })
+            }
+
+            if state.instance_state[instance_num].quorums_prepared >=
+                 floor(length(state.participants) / 2) + 1 do
+              IO.puts(
+                "#{state.name} - Quorums Prepared Met! #{inspect(state.instance_state[instance_num].quorums_prepared)}"
+              )
+
+              {_, a_val} =
+                Enum.reduce(state.instance_state[instance_num].a_val_list, {0, nil}, fn {k, v}, acc ->
+                  {acc_k, acc_v} = acc
+
+                  if k > acc_k and k != nil do
+                    {k, v}
+                  else
+                    {acc_k, acc_v}
+                  end
+                end)
+
+              #!
+              IO.puts(
+                "#{state.name} - prepared - #{inspect(a_val)}"
+              )
+
+              a_val =
+                if a_val == nil do
+                  state.instance_state[instance_num].v
+                else
+                  a_val
+                end
+
+              state = %{
+                state
+                | instance_state:
+                    Map.put(state.instance_state, instance_num, %{
+                      state.instance_state[instance_num]
+                      | quorums_prepared: 0,
+                        v: a_val
+                    })
+              }
+
+              IO.puts("#{state.name} - has sent to participants to accept")
+
+              Utils.beb_broadcast(
+                state.participants,
+                {:accept, instance_num, b, state.instance_state[instance_num].v, state.name}
+              )
+
+              state
+            else
+              state
+            end
           else
             state
           end
-        else
-          state  
-        end
-        state
 
-      ###--------------------###
-      {:accept, inst, b, v, sender} ->
-        if b >= state.bal do
-          IO.puts("#{state.name} send accepted the value #{inspect(state.val)}")
-          state = %{state | bal: b, a_bal: b, a_val: v}
-          Utils.unicast(sender, {:accepted, b})
-          state
-        else
-          IO.puts("#{state.name} send NACK from accepted!")
-          Utils.unicast(sender, {:nack, b})
-          state
-        end
+        {:accept, instance_num, b, v, leader} ->
+          state = check_instance_state_exist(state, instance_num)
 
-      ###--------------------###
-      {:accepted, inst, b} ->
-        state = %{state | accepted_quorum: state.accepted_quorum + 1}
-        IO.puts("#{state.name} Quorum - #{state.accepted_quorum}")
-        if state.name == state.leader do
-          if state.accepted_quorum >= trunc(length(state.participants)/2 + 1) do
-            IO.puts("#{state.name} Meet the accepted quorum!")
-            state = %{state | decided: true}
-            Utils.beb_broadcast(state.participants, {:instance_decision, state.val}) # send it to everyone to store it in instance_proposal
-            state = %{state | accepted_quorum: 0}
+          if b >= state.instance_state[instance_num].bal do
+            IO.puts("#{state.name} - #{state.name} has accepted bal: #{b} | v: #{inspect(v)}")
+
+            state = %{
+              state
+              | instance_state:
+                  Map.put(state.instance_state, instance_num, %{
+                    state.instance_state[instance_num]
+                    | bal: b,
+                      a_bal: b,
+                      a_val: v
+                  })
+            }
+
+            Utils.unicast(leader, {:accepted, instance_num, b})
             state
+          else
+            IO.puts("#{state.name} - NACK SENT")
+            Utils.unicast(leader, {:nack, b})
+            state
+          end
+
+        {:accepted, instance_num, b} ->
+          state = check_instance_state_exist(state, instance_num)
+
+          if state.name == state.leader do
+            state = %{
+              state
+              | instance_state:
+                  Map.put(state.instance_state, instance_num, %{
+                    state.instance_state[instance_num]
+                    | quorums_accepted: state.instance_state[instance_num].quorums_accepted + 1
+                  })
+            }
+
+            if state.instance_state[instance_num].quorums_accepted >=
+                 floor(length(state.participants) / 2) + 1 do
+              IO.puts(
+                "#{state.name} - Quorums Accepted Met! cnt: #{state.instance_state[instance_num].quorums_accepted}"
+              )
+
+              IO.puts(
+                "#{state.name} is sending decision "
+              )
+
+              Utils.beb_broadcast(
+                state.participants,
+                {:instance_decision, instance_num, state.instance_state[instance_num].v}
+              )
+
+              state = %{
+                state
+                | instance_state:
+                    Map.put(state.instance_state, instance_num, %{
+                      state.instance_state[instance_num]
+                      | quorums_accepted: 0
+                    })
+              }
+
+              state
+            else
+              state
+            end
           else
             state
           end
-        else
+
+        {:instance_decision, instance_num, decision} ->
+          state = check_instance_state_exist(state, instance_num)
+
+          state = %{
+            state
+            | instance_decision: Map.put(state.instance_decision, instance_num, decision)
+          }
+
+          IO.puts(
+            "#{state.name} - Updated Map #{inspect(state.instance_decision)} | Parent: #{inspect(state.parent_name)}"
+          )
+
+          if state.parent_name != nil do
+            send(state.parent_name, {:propose_responce, state.instance_state[instance_num].v})
+          end
+
           state
-        end
 
-      ###--------------------###
-      {:nack, inst, b} ->
-        if state.name == state.leader do
-          Utils.unicast(state.parent_name, {:nack, b})
-        end
-        state
-      
-      ###--------------------###
-      {:instance_decision, decision} ->
-        state = %{state | inst_decisions: Map.put(state.inst_decisions, state.inst, decision)}
-        IO.puts("#{state.name} - instance decisions values: #{inspect(state.inst_decisions)}")
-        if state.parent_name != nil do
-          send(state.parent_name, {:decision_made, state.val})
-        end
-        state
+        {:get_decision, instance_num, parent_process} ->
+          # IO.puts("#{state.name} - trying to print a decision num #{instance_num}")
+          if state.instance_decision[instance_num] != nil do
+            send(
+              parent_process,
+              {:decision_responce, state.instance_decision[instance_num]}
+            )
+          end
 
-      ###--------------------###
-      {:get_decision, inst, parent_name} ->
-        if Map.get(state.inst_decisions, inst) != nil do
-          send(parent_name, {:decision_response, Map.get(state.inst_decisions, inst)})
-        else
-          send(parent_name, {:decision_response, nil})
-        end
-        state
+          state
 
-    end
+        # TODO missing instance nubmer
+        {:nack, b} ->
+          if state.name == state.leader and state.parent_name != nil do
+            send(state.parent_name, {:abort, b})
+          end
+
+          state
+      end
+
     run(state)
   end
 
-  def get_decision(pid, inst, t) do
-    Process.send_after(pid, {:get_decision, inst, self()}, t)
-    decision = receive do
-      {:decision_response, value} ->
-        # IO.puts("returning value in :decision_responce #{inspect(value)}")
-        value
+  def check_instance_state_exist(state, instance_num) do
+    if state.instance_state[instance_num] == nil do
+      # IO.puts("#{state.name} - create new instance | #{inspect(instance_num)}")
+      state = %{
+        state
+        | instance_state:
+            Map.put(state.instance_state, instance_num, %{
+              # the current ballot [a number]
+              bal: 0,
+              # accepted ballot
+              a_bal: nil,
+              # accepted ballot value
+              a_val: nil,
+              a_val_list: [],
+              # proposal
+              v: nil,
+              quorums_prepared: 0,
+              quorums_accepted: 0
+            })
+      }
+    else
+      state
+    end
+  end
+
+  def get_decision(pid_pax, inst, t) do
+    # takes the process identifier pid of a process running a Paxos replica, an instance identifier inst, and a timeout t in milliseconds
+
+    # return v != nil if v is the value decided by consensus instance inst
+    # return nil in all other cases
+
+    send(pid_pax, {:get_decision, inst, self()})
+    # send(pid_pax, {:get_decision, inst, t, self()})
+    receive do
+      {:decision_responce, v} ->
+        # IO.puts("returning v in :decision_responce #{inspect(v)}")
+        v
     after
       t -> nil
     end
-    
   end
 
-  def propose(pid, inst, value, t) do
-    # do paxos stuff
+  def propose(pid_pax, inst, value, t) do
+    # is a function that takes the process identifier
+    # pid of an Elixir process running a Paxos replica, an instance identifier inst, a timeout t
+    # in milliseconds, and proposes a value value for the instance of consensus associated
+    # with inst. The values returned by this function must comply with the following
+    send(pid_pax, {:broadcast, inst, value, self()})
 
-    # this will be called in the beginning of the step one as every process will propose a value
-    # then the leader will start its ballot
-    send(pid, {:broadcast, inst, value, self()})
-    result = receive do
-      {:decision_made, value} ->
-        IO.puts("returning value in :propose_responce #{inspect(value)}")
-        {:decision, value}
+    receive do
+      {:propose_responce, v} ->
+        IO.puts("returning v in :propose_responce #{inspect(v)}")
+        v
+
+      {:abort} ->
+        {:abort}
     after
       t -> {:timeout}
     end
   end
+end
 
+defmodule Leader_election do
+  # pick lowest process
+  # processes wait to hear back
+  # timeout  if nothing heard
+  # when heard back pick leader
+  # if wrong leader elected, Paxos will reject proposals, because not leader (if check)
+
+  def start(name, participants) do
+    pid = spawn(Leader_election, :init, [name, participants])
+
+    Utils.register_name(Utils.add_to_name(name, "_LeaderElec"), pid)
+
+    # case :global.re_register_name(Utils.add_to_name(name, "_LeaderElec"), pid) do
+    #     :yes -> pid
+    #     :no  -> :error
+    # end
+    # Process.link(pid)
+    # IO.puts "registered #{name}"
+    # pid
+  end
+
+  def init(name, participants) do
+    state = %{
+      name: Utils.add_to_name(name, "_LeaderElec"),
+      # update to be paxos process name
+      parent_name: name,
+      participants: Enum.map(participants, fn n -> Utils.add_to_name(n, "_LeaderElec") end),
+      alive: %MapSet{},
+      leader: nil,
+      timeout: 100
+    }
+
+    Process.send_after(self(), {:timeout}, 1000)
+
+    run(state)
+  end
+
+  def run(state) do
+    state =
+      receive do
+        {:timeout} ->
+          # send heartbeat out to list of processes
+          # Await using delay of timeout
+          # sort the alive
+          # Assign leader from list of replied processes
+          # Clear the list
+
+          # IO.puts("#{state.name}: #{inspect({:timeout})}")
+
+          Utils.beb_broadcast(state.participants, {:heartbeat_req, self()})
+
+          Process.send_after(self(), {:timeout}, state.timeout)
+
+          state = elec_leader(state)
+
+          %{state | alive: %MapSet{}}
+
+        {:heartbeat_req, pid} ->
+          # IO.puts("#{state.name}: #{inspect({:heartbeat_req, pid})}")
+          send(pid, {:heartbeat_reply, state.parent_name})
+          state
+
+        {:heartbeat_reply, name} ->
+          # IO.puts("#{state.name}: #{inspect {:heartbeat_reply, name}}")
+          %{state | alive: MapSet.put(state.alive, name)}
+      end
+
+    run(state)
+  end
+
+  defp elec_leader(state) do
+    # when more than 1 process is alive
+    if MapSet.size(state.alive) > 0 do
+      # sort the list and make the first element the leader
+      first_elem = Enum.at(Enum.sort(state.alive), 0)
+      # if first elem is already leader dont elect new leader
+      if first_elem != state.leader do
+        Utils.unicast(state.parent_name, {:leader_elect, first_elem})
+        # the new leader is set
+        %{state | leader: first_elem}
+      else
+        state
+      end
+    else
+      state
+    end
+  end
+end
+
+defmodule EagerReliableBroadcast do
+  def start(name, processes, upper) do
+      pid = spawn(EagerReliableBroadcast, :init, [name, processes, upper])
+      # :global.unregister_name(name)
+      case :global.re_register_name(name, pid) do
+          :yes -> pid
+          :no  -> :error
+      end
+      IO.puts "registered #{name}"
+      pid
+  end
+
+  # Init event must be the first
+  # one after the component is created
+  def init(name, processes, upper_layer) do
+      state = %{
+          name: name,
+          processes: processes,
+          upper_layer: upper_layer,
+
+          # Tracks the sets of message sequence numbers received from each process
+          delivered: (for p <- processes, into: %{}, do: {p, %MapSet{}}),
+
+          # Tracks the highest contiguous message sequence number received from each process
+          all_up_to: (for p <- processes, into: %{}, do: {p, -1}),
+
+          # Current sequence number to assign to a newly broadcast message
+          seq_no: 0
+      }
+      run(state)
+  end
+
+  def run(state) do
+      state = receive do
+          {:broadcast, m} ->
+              data_msg = {:data, state.name, state.seq_no, m}
+              state = %{state | seq_no: state.seq_no + 1}
+              beb_broadcast(data_msg, state.processes)
+
+              # Replace beb_broadcast above with the one below to
+              # simulate the scenario in which :p0 does not broadcast to :p0 and :p1, and
+              # no one broadcasts to :p0.
+              # beb_broadcast_with_failures(state.name, :p0, [:p0, :p1], data_msg, state.processes)
+
+              # IO.puts("#{inspect state.name}: RB-broadcast: #{inspect m}")
+              state
+
+          {:data, proc, seq_no, m} ->
+              # IO.puts("#{inspect state.name}: BEB-deliver: #{inspect m} from #{inspect proc}, seqno=#{inspect seq_no}")
+              delivered = state.delivered[proc]
+              all_up_to = state.all_up_to[proc]
+              # IO.puts("#{inspect state.name}: delivered=#{inspect delivered}, all_up_to=#{inspect all_up_to}, seq_no=#{inspect seq_no}")
+
+              # This is a new message
+              if seq_no > all_up_to and seq_no not in delivered do
+                  # IO.puts("#{inspect state.name}: New message: #{inspect m} from #{inspect proc}, seqno=#{inspect seq_no}")
+                  delivered = MapSet.put(delivered, seq_no) # update delivered of proc with a new sequence number
+                  {delivered, all_up_to} = compact_delivered(delivered, all_up_to)  # Try to compact delivered and update all_up_to
+                  send(state.upper_layer, {:rb_deliver, proc, m}) # Trigger deliver indiciation
+                  beb_broadcast({:data, proc, seq_no, m}, state.processes) # Rebroadcast the message to ensure Agreement
+
+                  # Replace beb_broadcast above with the one below to
+                  # simulate the scenario in which :p0 does not broadcast to :p0 and :p1, and
+                  # no one broadcasts to :p0.
+                  # beb_broadcast_with_failures(state.name, :p0, [:p0, :p1], data_msg, state.processes)
+                  # beb_broadcast_with_failures(state.name, :p0, [:p0, :p1, :p2], {:data, proc, seq_no, m}, state.processes)
+
+                  # IO.puts("#{inspect state.name}: Echo: #{inspect m} from #{inspect proc}, seqno=#{inspect seq_no}")
+
+                  # Update the state to reflect updates to delivered and all_up_to
+                  %{state | delivered: %{state.delivered | proc => delivered},
+                            all_up_to: %{state.all_up_to | proc => all_up_to}}
+              else
+                  # IO.puts("#{inspect state.name}: Delivered before: #{inspect m} from #{inspect proc}, seqno=#{inspect seq_no}")
+                  state
+              end
+      end
+      run(state)
+  end
+
+  # Compute the next highest contiguous message sequence number in the set s
+  # starting from seqno
+  defp get_upper_seqno(seqno, s) do
+      if seqno in s, do: get_upper_seqno(seqno + 1, s), else: seqno-1
+  end
+
+  # Try to compact the delivered set for a process
+  # as per the algorithm described in the handout
+  defp compact_delivered(delivered, all_up_to) do
+      new_upper_seqno = get_upper_seqno(all_up_to + 1, delivered)
+      if new_upper_seqno > all_up_to do
+          delivered = Enum.reduce(all_up_to + 1..new_upper_seqno, delivered,
+                  fn(sn, s) -> MapSet.delete(s, sn) end)
+          all_up_to = new_upper_seqno
+          {delivered, all_up_to}
+      else
+          {delivered, all_up_to}
+      end
+  end
+
+  # Send message m point-to-point to process p
+  defp unicast(m, p) do
+      case :global.whereis_name(p) do
+              pid when is_pid(pid) -> send(pid, m)
+              :undefined -> :ok
+      end
+  end
+
+  # Best-effort broadcast of m to the set of destinations dest
+  defp beb_broadcast(m, dest), do: for p <- dest, do: unicast(m, p)
+
+  # Simulate a scenario in which proc_to_fail fails to send the message m
+  # to the processes in fail_send_to, and all other processes fail
+  # to send to proc_to_fail
+  defp beb_broadcast_with_failures(name, proc_to_fail, fail_send_to, m, dest) do
+      if name == proc_to_fail do
+          for p <- dest, p not in fail_send_to, do: unicast(m, p)
+      else
+          for p <- dest, p != proc_to_fail, do: unicast(m, p)
+      end
+  end
+
+end
+
+defmodule Utils do
+  def unicast(p, m) when p == nil, do: IO.puts("!!! Sending to nil with val #{inspect(m)}")
+
+  def unicast(p, m) do
+    case :global.whereis_name(p) do
+      pid when is_pid(pid) -> send(pid, m)
+      :undefined -> :ok
+    end
+  end
+
+  # Best-effort broadcast of m to the set of destinations dest
+  def beb_broadcast(dest, m), do: for(p <- dest, do: unicast(p, m))
+
+  def add_to_name(name, to_add), do: String.to_atom(Atom.to_string(name) <> to_add)
+
+  # \\ means default
+  def register_name(name, pid, link \\ true) do
+    case :global.re_register_name(name, pid) do
+      :yes ->
+        # parent runs this to link to leader + ERB
+        # when one dies all links also die
+
+        # if link true
+        if link do
+          Process.link(pid)
+        end
+
+        pid
+
+      :no ->
+        Process.exit(pid, :kill)
+        :error
+    end
+  end
 end

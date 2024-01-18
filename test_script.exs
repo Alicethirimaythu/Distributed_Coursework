@@ -57,7 +57,7 @@ test_suite = [
 
 #     {&PaxosTest.run_leader_crash_complex_2/3, TestUtil.get_dist_config(host, 11), 10, "Cascading failures of leaders and non-leaders, random delays, 7 nodes"},
 #     {&PaxosTest.run_leader_crash_complex_2/3, TestUtil.get_local_config(11), 10, "Cascading failures of leaders and non-leaders, random delays, 7 local procs"}, 
-# ]
+ ]
 
 
 Node.stop
