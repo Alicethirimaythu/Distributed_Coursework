@@ -3,6 +3,7 @@
  *Group members: Liam O'Driscoll(lo00301), Thiri May Thu @ Alice(tt00562)*
 
 ## **Cinema Seating Plan Application**
+- This application can only book a seat and view the seating plan.
 
 ### **Interface**
 
@@ -34,6 +35,7 @@
 
 - Any previous servers that had spun up will not be connected with the servers that have spun up after.
 - The clients cannot book the seats concurrently (at the same time)
+- If the seat is booked, it cannot be unbooked or cancelled the booking.
 
 ### **Extra Features**
 
