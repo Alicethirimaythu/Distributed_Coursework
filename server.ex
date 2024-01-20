@@ -144,9 +144,6 @@ defmodule Client do
             "#{IO.ANSI.red()}Invalid seat number! Please re-enter the seat number.#{IO.ANSI.reset()}"
           )
         end
-
-      {:error} ->
-        IO.puts("#{IO.ANSI.yellow()}Error! Please re-enter the seat number.#{IO.ANSI.reset()}")
     end
   end
 end

@@ -21,9 +21,21 @@
     - Seat bookings are guaranteed to terminate assuming it is not executed concurrently
 
 
+### **Usage Instructions**
+
+- firstly, call Client.spinup(number_of_servers) to start the servers (ie., Client.spinup(3), this will spawn 3+1 servers).
+- for the ***server_pid*** param, you need to choose one of the servers specifically. (ie., server_pid_A = Enum.at(pids, 0))
+- To view the seating plan, call ***view_seating_plan(server_pid)*** to print out the map of the seating plan that is stored in the server.
+- To book a seat, call ***book_seat(name, seat_num, server_pid)*** to book a seat. The functionality of this function is listed in the Interface.
+- Client.kill(pids) will kill all the servers that are spawned
+
+
 ### **Assumptions**
 
-I don't know what to write about
+- Any previous servers that had spun up will not be connected with the servers that have spun up after.
+- The clients cannot book the seats concurrently (at the same time)
 
+### **Extra Features**
 
+- Whenever view_seating_plan and book_seat functions are called, the server called will be updated till the latest decision made in Paxos if needed to. 
 
