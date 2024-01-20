@@ -47,15 +47,18 @@ defmodule Server do
           #   IO.puts("#{pid} - State: #{inspect(state)} \n")
 
           # if the seat_num exists in the seat_plan
-          state =
-            if Map.has_key?(state.seating_plan, String.to_atom(seat_num)) do
-              # ? returning: Invalid seat number! Please re-enter the seat number.
-              send(pid, {:server_response, nil, false})
-              state
-            end
+
+          seat_exists = Map.has_key?(state.seating_plan, String.to_atom(seat_num))
+
+          if not seat_exists do
+            # ? returning: Invalid seat number! Please re-enter the seat number.
+            # IO.puts("returning Invalid seat Number - #{seat_num}")
+            send(pid, {:server_response, nil, false})
+            state
+          end
 
           # need to check if the seat has already been booked
-
+          # returns nill if the seat isnt booked
           if Map.get(state.seating_plan, String.to_atom(seat_num)) == nil do
             decision =
               Paxos.propose(
@@ -67,12 +70,14 @@ defmodule Server do
 
             state = %{state | seating_plan: decision, inst: state.inst + 1}
             # ? returning successful booking
+            # IO.puts("returning successful booking seat_num - #{seat_num}")
             send(pid, {:server_response, seat_num, true})
             state
 
             # IO.puts("This is the name in the seating_plan - #{Map.get(decision, String.to_atom(seat_num))}")
           else
             # ? the seat has already been booked
+            # IO.puts("seat already booked - #{seat_num}")
             send(pid, {:server_response, seat_num, false})
             state
           end
@@ -87,7 +92,7 @@ defmodule Server do
     decision = Paxos.get_decision(state.pax_pid, state.inst, 1000)
 
     if decision != nil do
-      IO.puts("#{state.name} - has updated get_decision")
+    #   IO.puts("#{state.name} - has updated get_decision inst: #{inspect(state.inst)}")
       state = %{state | inst: state.inst + 1, seating_plan: decision}
       state
       check_latest_seating(state)
